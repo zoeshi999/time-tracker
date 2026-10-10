@@ -1,0 +1,15 @@
+{
+  "name": "time-tracker",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "db:init": "wrangler d1 execute time-tracker --remote --file=schema.sql",
+    "db:init:local": "wrangler d1 execute time-tracker --local --file=schema.sql",
+    "test": "node test/smoke.mjs"
+  },
+  "devDependencies": {
+    "wrangler": "^4.0.0"
+  }
+}

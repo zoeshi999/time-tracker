@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#e3d6ee">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="时间记录">
+  <link rel="icon" href="icon-192.png">
+  <link rel="apple-touch-icon" href="apple-touch-icon.png">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="stylesheet" href="style.css">
+  <title>时间记录</title>
+</head>
+<body data-tab="todo">
+  <div id="banner" class="banner" hidden></div>
+  <main id="view"></main>
+  <nav class="tabs" id="tabs">
+    <button data-tab="todo" class="on">
+      <svg viewBox="0 0 24 24"><path d="M5 8h14M5 16h14" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg>待办</button>
+    <button data-tab="sets">
+      <svg viewBox="0 0 24 24"><path d="M6 5h12M9 9.5h9M6 14h12M10 18.5h8" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg>待办集</button>
+    <button data-tab="stats">
+      <svg viewBox="0 0 24 24"><path d="M11 4a8 8 0 1 0 8 9h-8z" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round"/><path d="M14 3v7h7a7 7 0 0 0-7-7z" fill="currentColor"/></svg>数据统计</button>
+    <button data-tab="me">
+      <svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4" fill="currentColor"/><path d="M4 21c0-4.4 3.6-7 8-7s8 2.6 8 7z" fill="currentColor"/></svg>我的</button>
+  </nav>
+  <div id="focus" class="focus" hidden></div>
+  <div id="sheet-wrap" class="sheet-wrap" hidden>
+    <div class="sheet" id="sheet"></div>
+  </div>
+  <div id="toast" class="toast" hidden></div>
+  <script src="app.js"></script>
+</body>
+</html>
