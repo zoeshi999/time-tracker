@@ -9,6 +9,8 @@ CREATE TABLE IF NOT EXISTS entries (
   category TEXT,        -- 小类：交付 / 睡眠 ...
   project TEXT,         -- 项目标签，可空
   source TEXT,          -- timer / pomodoro / manual / ai
+  session TEXT,         -- 同一次计时（暂停分成的几段）共用一个
+  estimate_ms INTEGER NOT NULL DEFAULT 0,  -- 开始时填的预估
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
   deleted INTEGER NOT NULL DEFAULT 0

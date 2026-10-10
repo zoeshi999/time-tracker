@@ -69,13 +69,13 @@ function requireToken(request, env, url, prefix, allowRead = false) {
 
 // ---------- 数据层 ----------
 
-const COLS = 'id, start_time, end_time, duration_ms, description, area, category, project, source, created_at, updated_at, deleted';
+const COLS = 'id, start_time, end_time, duration_ms, description, area, category, project, source, session, estimate_ms, created_at, updated_at, deleted';
 
 function rowToEntry(r) {
   return {
     id: r.id, startTime: r.start_time, endTime: r.end_time, durationMs: r.duration_ms,
     description: r.description, area: r.area || '', category: r.category || '', project: r.project || '',
-    source: r.source || '', createdAt: r.created_at, updatedAt: r.updated_at, deleted: !!r.deleted,
+    source: r.source || '', session: r.session || '', estimateMs: r.estimate_ms || 0, createdAt: r.created_at, updatedAt: r.updated_at, deleted: !!r.deleted,
   };
 }
 
@@ -89,6 +89,7 @@ function cleanEntry(e) {
     description: String(e.description || '').slice(0, 500),
     area: String(e.area || '').slice(0, 50), category: String(e.category || '').slice(0, 50),
     project: String(e.project || '').slice(0, 100), source: String(e.source || 'manual').slice(0, 20),
+    session: String(e.session || '').slice(0, 64), estimateMs: Math.max(0, Number(e.estimateMs) || 0),
     createdAt: Number(e.createdAt) || now, updatedAt: Number(e.updatedAt) || now, deleted: !!e.deleted,
   };
 }
@@ -97,14 +98,15 @@ function cleanEntry(e) {
 async function upsertEntries(env, entries) {
   if (!entries.length) return;
   const stmts = entries.map((e) => env.DB.prepare(
-    `INSERT INTO entries (${COLS}) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+    `INSERT INTO entries (${COLS}) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
      ON CONFLICT(id) DO UPDATE SET start_time=excluded.start_time, end_time=excluded.end_time,
        duration_ms=excluded.duration_ms, description=excluded.description, area=excluded.area,
        category=excluded.category, project=excluded.project, source=excluded.source,
+       session=excluded.session, estimate_ms=excluded.estimate_ms,
        updated_at=excluded.updated_at, deleted=excluded.deleted
      WHERE excluded.updated_at > entries.updated_at`
   ).bind(e.id, e.startTime, e.endTime, e.durationMs, e.description, e.area, e.category, e.project,
-    e.source, e.createdAt, e.updatedAt, e.deleted ? 1 : 0));
+    e.source, e.session, e.estimateMs, e.createdAt, e.updatedAt, e.deleted ? 1 : 0));
   for (let i = 0; i < stmts.length; i += 50) await env.DB.batch(stmts.slice(i, i + 50));
 }
 
@@ -191,7 +193,7 @@ async function handleApi(request, env, url) {
     const since = Number(body.since) || 0;
     const incoming = (body.entries || []).map(cleanEntry);
     await upsertEntries(env, incoming);
-    for (const key of ['settings', 'categories', 'timer']) {
+    for (const key of ['settings', 'categories', 'tasks', 'timer', 'abandons']) {
       if (body[key] && body[key].updatedAt) await setKv(env, key, body[key].value, body[key].updatedAt);
     }
     const serverTime = Date.now();
@@ -204,6 +206,8 @@ async function handleApi(request, env, url) {
       settings: await getKv(env, 'settings', DEFAULT_SETTINGS),
       categories: await getKv(env, 'categories', DEFAULT_CATEGORIES),
       timer: await getKv(env, 'timer', null),
+      tasks: await getKv(env, 'tasks', null),
+      abandons: await getKv(env, 'abandons', {}),
     });
   }
 
