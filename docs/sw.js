@@ -1,5 +1,5 @@
 // 离线缓存：先用缓存打开，后台再取新版本，下次打开就是新版
-const CACHE = 'time-tracker-v2';
+const CACHE = 'time-tracker-v3';
 const ASSETS = ['./', 'index.html', 'app.js', 'style.css', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png', 'apple-touch-icon.png'];
 
 self.addEventListener('install', (e) => {

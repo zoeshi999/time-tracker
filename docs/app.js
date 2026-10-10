@@ -171,6 +171,7 @@ async function saveEntry(e) {
     startTime: e.startTime, endTime: e.endTime, durationMs: e.endTime - e.startTime,
     description: (e.description || '').trim(), area: e.category ? (e.area || '') : '', category: e.category || '',
     project: (e.project || '').trim(), source: e.source || (prev && prev.source) || 'manual',
+    session: e.session || (prev && prev.session) || '', estimateMs: e.estimateMs ?? (prev && prev.estimateMs) ?? 0,
     createdAt: (prev && prev.createdAt) || now, updatedAt: Math.max(now, prev ? prev.updatedAt + 1 : 0),
     deleted: !!e.deleted,
   };
@@ -276,11 +277,31 @@ function topBar() {
 
 function taskEntries(task) { return live().filter((e) => taskNameOf(e) === task.name); }
 
+function weekStart(ts = Date.now()) { const d = new Date(ts); return addDays(startOfDay(ts), -((d.getDay() + 6) % 7)); }
+
+// 每周目标（习惯）：本周做了几次 / 几小时。暂停分成的几段算同一次
+function goalProgress(t) {
+  if (!t.goal || !(t.goal.value > 0)) return null;
+  const from = weekStart(), to = addDays(from, 7);
+  const list = taskEntries(t).filter((e) => overlap(e, from, to) > 0);
+  const times = t.goal.type === 'times';
+  const done = times ? new Set(list.map((e) => e.session || e.id)).size : sumIn(list, from, to) / HOUR;
+  const shown = times ? done : Math.round(done * 10) / 10;
+  return { done, shown, value: t.goal.value, unit: times ? '次' : '小时', frac: Math.min(1, done / t.goal.value) };
+}
+
+function goalLine(t) {
+  const g = goalProgress(t);
+  if (!g) return '';
+  return `<div class="goal"><div class="goal-bar"><i style="width:${g.frac * 100}%"></i></div>
+    <span>本周 ${g.shown}/${g.value} ${g.unit}${g.frac >= 1 ? ' ✓' : ''}</span></div>`;
+}
+
 function taskCard(t, withMore) {
   const from = startOfDay(Date.now());
   const n = taskEntries(t).filter((e) => e.startTime >= from).length;
   return `<div class="task" style="--c:${esc(t.color)}" data-act="start" data-id="${esc(t.id)}">
-    <div class="task-main"><div class="task-name">${esc(t.name)}</div><div class="task-sub">${t.mode === 'down' ? `${t.minutes} 分钟` : '正计时'}</div></div>
+    <div class="task-main"><div class="task-name">${esc(t.name)}</div><div class="task-sub">${t.mode === 'down' ? `${t.minutes} 分钟` : '正计时'}</div>${goalLine(t)}</div>
     <div class="task-go"><span>开始</span>${n ? `<small>今日已专注 ${n} 次</small>` : ''}</div>
     ${withMore ? `<button class="task-more" data-act="task-menu" data-id="${esc(t.id)}" aria-label="更多">${ICON.more}</button>` : ''}
   </div>`;
@@ -329,6 +350,12 @@ function remainingMs(t) {
   return t.paused ? t.remaining : Math.max(0, t.endsAt - Date.now());
 }
 function timerText(t) { return t.mode === 'down' ? fmtClock(remainingMs(t)) : fmtClock(Date.now() - t.startTime); }
+function focusSub(t) {
+  if (t.mode === 'down') return `${t.paused ? '已暂停' : '专注中'} · ${hm(t.startTime)} 开始`;
+  if (!t.estimateMin) return `正计时 · ${hm(t.startTime)} 开始`;
+  const left = t.startTime + t.estimateMin * MIN - Date.now();
+  return `预估 ${fmtDur(t.estimateMin * MIN)} · ${left >= 0 ? `还剩 ${fmtDur(left)}` : `已超出 ${fmtDur(-left)}`}`;
+}
 
 function renderFocus() {
   const f = $('#focus');
@@ -348,14 +375,14 @@ function renderFocus() {
     return;
   }
   const isDown = t.mode === 'down';
-  const status = isDown ? (t.paused ? '已暂停' : '专注中') : '正计时';
   f.style.setProperty('--c', t.color || '#8e63b0');
   f.innerHTML = `<div class="focus-in">
     <div class="focus-top"><button class="ftop" data-act="minimize" aria-label="收起">${ICON.down}</button></div>
     <div class="focus-center">
       <div class="focus-name">${esc(t.name)}</div>
       <div class="focus-clock" id="focus-clock">${timerText(t)}</div>
-      <div class="focus-sub">${status} · ${hm(t.startTime)} 开始</div>
+      <div class="focus-sub" id="focus-sub">${focusSub(t)}</div>
+      ${!isDown && !t.estimateMin ? `<div class="est-pick"><span>预估要多久？</span>${[15, 30, 45, 60, 90, 120].map((m) => `<button class="est-chip" data-act="set-estimate" data-v="${m}">${m < 60 ? m + '分' : m / 60 + '小时'}</button>`).join('')}</div>` : ''}
     </div>
     <div class="focus-extra" id="focus-extra" ${S.showExtra ? '' : 'hidden'}>
       <input data-bind="focus.note" placeholder="备注（可不填）" value="${esc(t.note || '')}">
@@ -432,8 +459,58 @@ function gapRow(g) {
     <span>未记录 ${hm(g.start)}–${hm(g.end)}（${fmtDur(g.end - g.start)}）</span><span>补记 ›</span></button>`;
 }
 
+function taskColorOf(e) {
+  const t = tasks().find((x) => x.name === taskNameOf(e));
+  return t ? t.color : (e.area === '工作' ? '#9b7fd0' : e.area === '生活' ? '#f3a6b8' : '#b9b3bf');
+}
+
+// 一天的时间线：像日历一样，看出哪段做了什么、哪里空着
+function timelineView(day) {
+  const dayEnd = addDays(day, 1);
+  const list = live().filter((e) => overlap(e, day, dayEnd) > 0).sort((a, b) => a.startTime - b.startTime);
+  const t = timer();
+  const firstHour = Math.min(setting('dayStartHour'), ...list.map((e) => (e.startTime < day ? 0 : new Date(e.startTime).getHours())));
+  const PX = 64; // 每小时的高度
+  const top0 = day + firstHour * HOUR;
+  const y = (ts) => ((Math.max(ts, top0) - top0) / HOUR) * PX;
+  const hours = [];
+  for (let h = firstHour; h <= 24; h++) hours.push(`<div class="tl-hour" style="top:${(h - firstHour) * PX}px"><span>${pad(h)}:00</span></div>`);
+  const blocks = list.map((e) => {
+    const s = Math.max(e.startTime, top0), en = Math.min(e.endTime, dayEnd);
+    if (en <= s) return '';
+    const h = Math.max(22, y(en) - y(s));
+    return `<button class="tl-block" data-act="edit" data-id="${esc(e.id)}" style="top:${y(s)}px;height:${h}px;--c:${esc(taskColorOf(e))}">
+      <b>${esc(e.description)}</b>${h >= 38 ? `<small>${hm(e.startTime)}–${hm(e.endTime)} · ${fmtDur(e.durationMs)}</small>` : ''}</button>`;
+  }).join('');
+  const gaps = gapsForDay(day, list).map((g) => `<button class="tl-gap" data-act="fill-gap" data-s="${g.start}" data-e="${g.end}" style="top:${y(g.start)}px;height:${Math.max(22, y(g.end) - y(g.start))}px">
+      <span>未记录 ${hm(g.start)}–${hm(g.end)} · 补记</span></button>`).join('');
+  const now = Date.now();
+  const running = t && !t.paused && (t.segStart || t.startTime) < dayEnd && now >= day
+    ? `<div class="tl-block running" style="top:${y(t.segStart || t.startTime)}px;height:${Math.max(22, y(now) - y(t.segStart || t.startTime))}px;--c:${esc(t.color || '#9466b4')}"><b>${esc(t.name)}（进行中）</b></div>` : '';
+  const nowLine = now >= day && now < dayEnd ? `<div class="tl-now" style="top:${y(now)}px"></div>` : '';
+  const total = list.reduce((s, e) => s + overlap(e, day, dayEnd), 0);
+  const isToday = day === startOfDay(now);
+  return `
+    <div class="period-nav"><button class="ic" data-act="tl-prev" aria-label="前一天">${ICON.left}</button>
+      <span><b>${dayLabel(day)}</b><span class="muted"> · ${fmtDur(total)}</span></span>
+      <button class="ic" data-act="tl-next" aria-label="后一天" ${isToday ? 'disabled' : ''}>${ICON.chev}</button></div>
+    <div class="timeline" style="height:${(24 - firstHour) * PX + 12}px">${hours.join('')}${gaps}${blocks}${running}${nowLine}</div>`;
+}
+
 function viewRecords() {
   const filter = S.recordsFilter;
+  if (!filter && S.recordsMode !== 'list') {
+    const day = S.tlDay || startOfDay(Date.now());
+    return `
+      <div class="topbar left"><button class="round" data-act="go" data-v="stats" aria-label="返回">${ICON.left}</button>
+        <span class="topbar-title">专注记录</span>
+        <button class="round" data-act="add" aria-label="补记">${ICON.plus}</button></div>
+      <div class="panel">
+        <div class="seg">${[['timeline', '时间线'], ['list', '列表']].map(([k, l]) => `<button class="${(S.recordsMode || 'timeline') === k ? 'on' : ''}" data-act="records-mode" data-v="${k}">${l}</button>`).join('')}</div>
+        ${timelineView(day)}
+      </div>
+      ${syncLine()}`;
+  }
   const all = live().filter((e) => !filter || taskNameOf(e) === filter);
   const today = startOfDay(Date.now());
   const oldest = addDays(today, -(S.recordsDays - 1));
@@ -463,7 +540,7 @@ function viewRecords() {
     <div class="topbar left"><button class="round" data-act="go" data-v="${filter ? 'todo' : 'stats'}" aria-label="返回">${ICON.left}</button>
       <span class="topbar-title">${filter ? esc(filter) + ' · ' : ''}专注记录</span>
       <button class="round" data-act="add" aria-label="补记">${ICON.plus}</button></div>
-    <div class="panel">${html}
+    <div class="panel">${filter ? '' : `<div class="seg">${[['timeline', '时间线'], ['list', '列表']].map(([k, l]) => `<button class="${S.recordsMode === k ? 'on' : ''}" data-act="records-mode" data-v="${k}">${l}</button>`).join('')}</div>`}${html}
     ${hasOlder ? '<button class="btn block" data-act="more" style="margin-top:12px">再看更早的</button>' : ''}</div>
     ${syncLine()}`;
 }
@@ -578,6 +655,32 @@ function curve(items, id) {
   </svg>`;
 }
 
+// 预估 vs 实际：只算开始时填了预估的那些次
+function estimateCard(entries, p) {
+  const sessions = new Map();
+  for (const e of entries) {
+    if (!e.estimateMs || overlap(e, p.from, p.to) <= 0) continue;
+    const k = e.session || e.id;
+    const s = sessions.get(k) || { name: taskNameOf(e), est: e.estimateMs, actual: 0, start: e.startTime };
+    s.actual += e.durationMs;
+    s.start = Math.min(s.start, e.startTime);
+    sessions.set(k, s);
+  }
+  const list = [...sessions.values()].sort((a, b) => b.start - a.start);
+  if (!list.length) return `<p class="muted">正计时开始后，在计时页点一下「预估要多久」，这里就会对比你估的和实际用的。</p>`;
+  const est = list.reduce((s, x) => s + x.est, 0), act = list.reduce((s, x) => s + x.actual, 0);
+  const diff = Math.round((act / est - 1) * 100);
+  const byTask = new Map();
+  for (const x of list) { const g = byTask.get(x.name) || { est: 0, act: 0, n: 0 }; g.est += x.est; g.act += x.actual; g.n++; byTask.set(x.name, g); }
+  const pct = (a, b) => { const d = Math.round((a / b - 1) * 100); return d === 0 ? '刚好' : d > 0 ? `多用 ${d}%` : `少用 ${-d}%`; };
+  return `
+    <div class="three"><div><div class="k">次数</div><div class="v">${list.length}</div></div>
+      <div><div class="k">预估</div><div class="v">${bigDur(est)}</div></div>
+      <div><div class="k">实际</div><div class="v">${bigDur(act)}</div></div></div>
+    <p class="center strong">${diff === 0 ? '和预估刚好一样' : diff > 0 ? `实际比预估多用了 ${diff}%` : `实际比预估少用了 ${-diff}%`}</p>
+    ${[...byTask.entries()].sort((a, b) => b[1].n - a[1].n).map(([name, g]) => `<div class="est-row"><span>${esc(name)}<small> ${g.n} 次</small></span><span>预估 ${fmtDur(g.est)} → 实际 ${fmtDur(g.act)}</span><b class="${g.act > g.est ? 'over' : 'under'}">${pct(g.act, g.est)}</b></div>`).join('')}`;
+}
+
 function matchFilter(e, f) {
   if (!f) return true;
   if (f.task) return taskNameOf(e) === f.task;
@@ -655,6 +758,10 @@ function viewStats() {
     <div class="scard">
       <div class="shead">专注时段分布 <span class="muted">${esc(p.title)}</span></div>
       ${roundBars(hourItems)}
+    </div>
+    <div class="scard">
+      <div class="shead">预估 vs 实际 <span class="muted">${esc(p.title)}</span></div>
+      ${estimateCard(inP, p)}
     </div>
     <div class="scard">
       <div class="shead row-sb"><span>月度数据 ${m.getFullYear()}-${pad(m.getMonth() + 1)}</span>
@@ -761,6 +868,7 @@ function openTaskMenu(t) {
     <div class="menu-body">
       <div class="menu-row"><button class="mbtn" data-act="edit-task" data-id="${esc(t.id)}">编辑</button><button class="mbtn danger" data-act="delete-task" data-id="${esc(t.id)}">删除</button></div>
       <div class="menu-row"><button class="mbtn" data-act="task-records" data-id="${esc(t.id)}">${ICON.hist}专注历史记录</button><button class="mbtn" data-act="task-stats" data-id="${esc(t.id)}">${ICON.pie}数据统计</button></div>
+      ${goalProgress(t) ? `<div class="mbox">本周目标${goalLine(t)}</div>` : ''}
       <div class="mbox row-sb"><span>周热力图</span><span class="heat">${week.map((w) => `<i title="${ymd(w.d)} ${fmtDur(w.ms)}" style="opacity:${w.ms ? 0.3 + 0.7 * (w.ms / maxDay) : 1};background:${w.ms ? 'var(--accent)' : 'var(--line)'}"></i>`).join('')}</span></div>
       <div class="mbox"><div class="shead">累计数据</div>
         <div class="three"><div><div class="k">专注次数</div><div class="v">${list.length}</div></div>
@@ -820,6 +928,8 @@ function openTaskEditor(t) {
     <div class="chips" id="task-mode">${taskModeChips()}</div>
     <label>放进哪个待办集</label>
     <div id="task-picker">${catPicker('task')}</div>
+    <label>每周目标（可不设）</label>
+    <div class="chips" id="task-goal">${goalChips()}</div>
     <label>颜色</label>
     <div class="swatches" id="task-colors">${colorSwatches()}</div>
     <div class="actions">
@@ -833,6 +943,14 @@ function taskModeChips() {
   const custom = f.mode === 'down' && !opts.some(([m, n]) => m === 'down' && n === f.minutes);
   return opts.map(([m, n, l]) => `<button class="chip ${!custom && f.mode === m && (m === 'up' || f.minutes === n) ? 'on' : ''}" data-act="task-mode" data-m="${m}" data-n="${n}">${l}</button>`).join('') +
     `<input class="chip-input ${custom ? 'on' : ''}" type="number" min="1" max="600" inputmode="numeric" placeholder="自定分钟" data-bind="task.customMin" value="${custom ? f.minutes : ''}">`;
+}
+function goalChips() {
+  const g = S.form.task.goal || {};
+  const type = g.type || '';
+  return `<button class="chip ${!type ? 'on' : ''}" data-act="goal-type" data-v="">不设</button>
+    <button class="chip ${type === 'times' ? 'on' : ''}" data-act="goal-type" data-v="times">按次数</button>
+    <button class="chip ${type === 'hours' ? 'on' : ''}" data-act="goal-type" data-v="hours">按小时</button>
+    ${type ? `<span class="goal-input">每周 <input type="number" min="0.5" max="200" step="0.5" inputmode="decimal" data-bind="task.goalValue" value="${g.value || ''}"> ${type === 'times' ? '次' : '小时'}</span>` : ''}`;
 }
 function colorSwatches() {
   return COLORS.map((c) => `<button class="sw ${S.form.task.color === c ? 'on' : ''}" style="background:${c}" data-act="task-color" data-v="${c}" aria-label="颜色"></button>`).join('');
@@ -848,7 +966,14 @@ async function saveTask() {
     id: f.id || uid(), name: f.name.trim(), area: f.category ? f.area : '', category: f.category || '',
     mode: f.mode || 'up', minutes: f.mode === 'down' ? f.minutes : 0, color: f.color || COLORS[list.length % COLORS.length],
     order: f.order ?? (list.reduce((m, t) => Math.max(m, t.order), 0) + 1),
+    goal: null,
   };
+  const g = f.goal || {};
+  const gv = Number(f.goalValue ?? g.value);
+  if (g.type) {
+    if (!(gv > 0)) return toast('每周目标的数字不对');
+    task.goal = { type: g.type, value: gv };
+  }
   const i = list.findIndex((t) => t.id === task.id);
   if (i >= 0) list[i] = task; else list.push(task);
   await setKv('tasks', list);
@@ -873,6 +998,7 @@ async function startTask(task) {
     taskId: task.id, name: task.name, area: task.area, category: task.category, color: task.color,
     mode: task.mode, minutes: task.minutes, startTime: now, segStart: now,
     endsAt: task.mode === 'down' ? now + task.minutes * MIN : null, paused: false, remaining: 0, note: '', project: '',
+    session: uid(), estimateMin: 0,
     source: task.mode === 'down' ? 'pomodoro' : 'timer',
   });
   S.minimized = false;
@@ -886,6 +1012,7 @@ async function saveSegment(t, end) {
   return saveEntry({
     startTime: start, endTime: end, description: t.note ? `${t.name}：${t.note}` : t.name,
     area: t.area, category: t.category, project: t.project, source: t.source,
+    session: t.session, estimateMs: t.estimateMin ? t.estimateMin * MIN : 0,
   });
 }
 
@@ -897,6 +1024,7 @@ async function finishTimer(end = Date.now(), auto = false) {
   if (t.mode === 'down' && setting('breakMin') > 0 && auto) S.brk = { endsAt: end + setting('breakMin') * MIN };
   if (S.brk && S.brk.endsAt <= Date.now()) S.brk = null;
   if (auto) { S.notice = `「${t.name}」${t.minutes} 分钟完成了${S.brk ? '，休息一下' : ''}。`; notify('专注完成', `「${t.name}」${t.minutes} 分钟完成了`); }
+  else if (saved && t.estimateMin) toast(`预估 ${fmtDur(t.estimateMin * MIN)}，实际 ${fmtDur(end - t.startTime)}`, 4000);
   else toast(saved ? `已记录「${t.name}」` : '不到 1 分钟，没有记录');
   render();
 }
@@ -962,6 +1090,8 @@ async function tick() {
   }
   const c = $('#focus-clock');
   if (c) c.textContent = t ? timerText(t) : fmtClock(Math.max(0, S.brk.endsAt - Date.now()));
+  const fs = $('#focus-sub');
+  if (fs && t) fs.textContent = focusSub(t);
   const mc = $('#mini-clock');
   if (mc && t) mc.textContent = timerText(t);
   if (t && t.mode !== 'down' && !$('#banner').innerHTML.includes('忘了停') && Date.now() - t.startTime > setting('forgotStopHours') * HOUR) renderBanner();
@@ -1061,6 +1191,16 @@ const actions = {
     Object.assign(S.form.task, { mode: el.dataset.m, minutes: Number(el.dataset.n), customMin: '' });
     $('#task-mode').innerHTML = taskModeChips();
   },
+  'goal-type': (el) => {
+    const f = S.form.task;
+    f.goal = el.dataset.v ? { type: el.dataset.v, value: (f.goal && f.goal.value) || (el.dataset.v === 'times' ? 5 : 3) } : null;
+    f.goalValue = f.goal ? f.goal.value : undefined;
+    $('#task-goal').innerHTML = goalChips();
+  },
+  'records-mode': (el) => { S.recordsMode = el.dataset.v; render(); },
+  'tl-prev': () => { S.tlDay = addDays(S.tlDay || startOfDay(Date.now()), -1); render(); },
+  'tl-next': () => { S.tlDay = Math.min(startOfDay(Date.now()), addDays(S.tlDay || startOfDay(Date.now()), 1)); render(); },
+  'set-estimate': async (el) => { const t = timer(); if (t) { await setKv('timer', { ...t, estimateMin: Number(el.dataset.v) }); render(); } },
   'task-color': (el) => { S.form.task.color = el.dataset.v; $('#task-colors').innerHTML = colorSwatches(); },
   'save-task': () => saveTask(),
   'delete-task': async (el) => {
