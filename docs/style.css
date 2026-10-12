@@ -306,3 +306,6 @@ svg { display: block; }
 .tl-now { position: absolute; left: 44px; right: 0; height: 2px; background: var(--danger); }
 .tl-now::before { content: ''; position: absolute; left: -4px; top: -3px; width: 8px; height: 8px; border-radius: 50%; background: var(--danger); }
 .panel > .seg { margin-top: 12px; }
+.howto { margin-top: 4px; font-size: 14px; }
+.howto summary { cursor: pointer; color: var(--accent); font-weight: 600; padding: 4px 0; }
+.howto ol { margin: 6px 0 0; padding-left: 20px; line-height: 1.7; }

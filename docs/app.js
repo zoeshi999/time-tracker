@@ -28,6 +28,7 @@ const DEFAULT_SETTINGS = {
   dayStartHour: 7,      // 补记空白时段时，只看这个时间之后
   gapMinMinutes: 15,    // 多长的空白才提示补记
   keepAwake: 0,         // 1 = 计时页面打开时屏幕不自动熄灭
+  clockAlarm: 0,        // 1 = 倒计时开始时，用快捷指令在 iPhone 时钟里定一个同样长的计时器
 };
 const SYNC_KEYS = ['settings', 'categories', 'tasks', 'timer', 'abandons'];
 const WEEKDAYS = ['日', '一', '二', '三', '四', '五', '六'];
@@ -828,6 +829,22 @@ function viewMe() {
         <div><label>空白超过几分钟提示</label><input type="number" min="5" max="240" inputmode="numeric" data-setting="gapMinMinutes" value="${s.gapMinMinutes}"></div>
       </div>
     </div>
+    <h2>后台响铃</h2>
+    <div class="card">
+      <p class="muted" style="margin-top:0">切去微信等别的 App 时，这里到点没法响。打开后，每次开始倒计时会顺手在 iPhone「时钟」里定一个同样长的计时器，到点由系统响铃。开始时会闪一下「快捷指令」，划回来就行；暂停或放弃时，时钟那边要自己关。</p>
+      <details class="howto"><summary>第一次用：先建一个快捷指令（只需一次）</summary>
+        <ol>
+          <li>打开「快捷指令」App，点右上角 ＋</li>
+          <li>点「添加操作」，搜索「启动计时器」，点它加进来</li>
+          <li>点里面蓝色的时长，选「快捷指令输入」；把后面的单位改成「秒」</li>
+          <li>点最上方的名字，改成「${CLOCK_SHORTCUT}」（四个字要一样），点完成</li>
+        </ol>
+      </details>
+      <div class="row" style="margin-top:12px">
+        <button class="btn ${s.clockAlarm ? 'primary' : ''}" data-act="toggle-clock">${s.clockAlarm ? '已打开' : '打开'}</button>
+        <button class="btn" data-act="test-clock">试一下（10 秒）</button>
+      </div>
+    </div>
     <h2>待办集</h2>
     <div class="card">
       <p class="muted" style="margin-top:0">一行一个大类，冒号后面是待办集，用顿号隔开。改名不会改动已有记录。</p>
@@ -1014,8 +1031,19 @@ async function saveTask() {
 
 // ---------- 计时 ----------
 
+// ---------- 后台响铃 ----------
+// 网页应用切到后台会被冻住，到点没法响。借 iPhone 自带的时钟：
+// 通过快捷指令「计时提醒」定一个同样长的系统计时器，锁屏、在微信里都会响。
+const CLOCK_SHORTCUT = '计时提醒';
+function startClockAlarm(ms) {
+  if (!setting('clockAlarm') || ms < 1000) return;
+  // 要在点击里同步跳转，否则 iOS 可能拦下
+  location.href = `shortcuts://run-shortcut?name=${encodeURIComponent(CLOCK_SHORTCUT)}&input=text&text=${Math.round(ms / 1000)}`;
+}
+
 async function startTask(task) {
   if (timer()) { S.minimized = false; render(); return toast('先结束正在进行的计时'); }
+  if (task.mode === 'down') startClockAlarm(task.minutes * MIN);
   S.brk = null;
   S.showExtra = false;
   try { audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)(); audioCtx.resume(); } catch (_) {}
@@ -1078,7 +1106,7 @@ async function pauseTimer() {
   const t = timer();
   if (!t || t.mode !== 'down') return;
   const now = Date.now();
-  if (t.paused) await setKv('timer', { ...t, paused: false, segStart: now, endsAt: now + t.remaining });
+  if (t.paused) { startClockAlarm(t.remaining); await setKv('timer', { ...t, paused: false, segStart: now, endsAt: now + t.remaining }); }
   else { await saveSegment(t, now); await setKv('timer', { ...t, paused: true, remaining: Math.max(0, t.endsAt - now) }); }
   render();
 }
@@ -1179,6 +1207,15 @@ const actions = {
   abandon: () => abandonTimer(),
   pause: () => pauseTimer(),
   minimize: () => { S.minimized = true; render(); },
+  'toggle-clock': async () => {
+    const on = !setting('clockAlarm');
+    await setKv('settings', { ...DEFAULT_SETTINGS, ...S.settings.value, clockAlarm: on ? 1 : 0 });
+    render();
+    toast(on ? '已打开，开始倒计时会同时定好 iPhone 计时器' : '已关闭');
+  },
+  'test-clock': () => {
+    location.href = `shortcuts://run-shortcut?name=${encodeURIComponent(CLOCK_SHORTCUT)}&input=text&text=10`;
+  },
   'toggle-awake': async () => {
     if (!awakeSupported()) return toast('这台手机的系统暂不支持，升级到最新 iOS 后再试');
     const on = !setting('keepAwake');
