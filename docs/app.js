@@ -27,6 +27,7 @@ const DEFAULT_SETTINGS = {
   forgotStopHours: 3,   // 正计时超过这么久提醒
   dayStartHour: 7,      // 补记空白时段时，只看这个时间之后
   gapMinMinutes: 15,    // 多长的空白才提示补记
+  keepAwake: 0,         // 1 = 计时页面打开时屏幕不自动熄灭
 };
 const SYNC_KEYS = ['settings', 'categories', 'tasks', 'timer', 'abandons'];
 const WEEKDAYS = ['日', '一', '二', '三', '四', '五', '六'];
@@ -361,10 +362,11 @@ function renderFocus() {
   const f = $('#focus');
   const t = timer();
   const b = S.brk;
-  if (!t && !b) { f.hidden = true; f.innerHTML = ''; return; }
+  if (!t && !b) { f.hidden = true; f.innerHTML = ''; syncWakeLock(); return; }
   if (!t) {
     f.style.setProperty('--c', '#5bbfb0');
     f.innerHTML = `<div class="focus-in">
+      <div class="focus-top">${awakeBtn()}</div>
       <div class="focus-center">
         <div class="focus-name">休息一下</div>
         <div class="focus-clock" id="focus-clock">${fmtClock(Math.max(0, b.endsAt - Date.now()))}</div>
@@ -372,12 +374,13 @@ function renderFocus() {
       </div>
       <div class="focus-bar"><button class="fbtn" data-act="skip-break">${ICON.stop}<span>跳过休息</span></button></div></div>`;
     f.hidden = false;
+    syncWakeLock();
     return;
   }
   const isDown = t.mode === 'down';
   f.style.setProperty('--c', t.color || '#8e63b0');
   f.innerHTML = `<div class="focus-in">
-    <div class="focus-top"><button class="ftop" data-act="minimize" aria-label="收起">${ICON.down}</button></div>
+    <div class="focus-top">${awakeBtn()}<button class="ftop" data-act="minimize" aria-label="收起">${ICON.down}</button></div>
     <div class="focus-center">
       <div class="focus-name">${esc(t.name)}</div>
       <div class="focus-clock" id="focus-clock">${timerText(t)}</div>
@@ -396,6 +399,33 @@ function renderFocus() {
       <button class="fbtn" data-act="abandon">${ICON.x}<span>放弃</span></button>
     </div></div>`;
   f.hidden = S.minimized;
+  syncWakeLock();
+}
+
+// ---------- 屏幕常亮 ----------
+// 网页做不到锁屏上显示计时，退而求其次：计时页面开着时不让屏幕自动熄灭。
+// 切到后台、收起计时页、计时结束时都会自动放开。
+let wakeLock = null;
+let wakePending = false;
+const awakeSupported = () => 'wakeLock' in navigator;
+function awakeBtn() {
+  const on = !!setting('keepAwake');
+  return `<button class="awake ${on ? 'on' : ''}" data-act="toggle-awake">${on ? '屏幕常亮：开' : '屏幕常亮：关'}</button>`;
+}
+async function syncWakeLock() {
+  const want = !!setting('keepAwake') && !document.hidden && !$('#focus').hidden && awakeSupported();
+  if (want && !wakeLock && !wakePending) {
+    wakePending = true;
+    try {
+      wakeLock = await navigator.wakeLock.request('screen');
+      wakeLock.addEventListener('release', () => { wakeLock = null; });
+    } catch (e) { wakeLock = null; }
+    wakePending = false;
+    if (!setting('keepAwake') || $('#focus').hidden) syncWakeLock();
+  } else if (!want && wakeLock) {
+    const l = wakeLock; wakeLock = null;
+    try { await l.release(); } catch (e) {}
+  }
 }
 
 function projectOptions() {
@@ -1149,6 +1179,13 @@ const actions = {
   abandon: () => abandonTimer(),
   pause: () => pauseTimer(),
   minimize: () => { S.minimized = true; render(); },
+  'toggle-awake': async () => {
+    if (!awakeSupported()) return toast('这台手机的系统暂不支持，升级到最新 iOS 后再试');
+    const on = !setting('keepAwake');
+    await setKv('settings', { ...DEFAULT_SETTINGS, ...S.settings.value, keepAwake: on ? 1 : 0 });
+    renderFocus();
+    toast(on ? '计时页面开着时，屏幕不会自动熄灭' : '已恢复自动息屏');
+  },
   maximize: () => { S.minimized = false; render(); },
   'toggle-extra': () => { S.showExtra = !S.showExtra; $('#focus-extra').hidden = !S.showExtra; },
   'skip-break': () => { S.brk = null; render(); },
